@@ -1,0 +1,368 @@
+# Progress Log
+
+PRD: kostnad
+Started: 2026-01-25
+
+## Codebase Patterns
+
+### Drizzle Schema Pattern
+- Tables defined in `lib/services/db/schema.ts`
+- Use `pgTable()` with inline constraints via 3rd arg array
+- Unique constraint: `unique().on(t.columnName)`
+- Export types: `typeof table.$inferSelect` / `$inferInsert`
+- IDs: cuid2 via `$defaultFn(() => createId())`
+- Timestamps: `timestamp().notNull().defaultNow()` + `.$onUpdate(() => new Date())`
+
+### Seed Script Pattern
+- File: `lib/services/db/seed.ts`
+- Uses `drizzle-orm/postgres-js` with `drizzle({ connection: url, casing: 'snake_case' })`
+- Run: `pnpm db:seed`
+- Upsert pattern: `.onConflictDoNothing({ target: table.column })`
+
+### Excel Parsing Pattern
+- Use `exceljs` package (not xlsx - has corruption issues)
+- `const workbook = new ExcelJS.Workbook(); await workbook.xlsx.readFile(path)`
+- Access rows: `worksheet.eachRow()` or `worksheet.getRow(n).values`
+- Row values are 1-indexed arrays (index 0 is empty)
+- For Buffer input, write to temp file first (exceljs Buffer types incompatible with Node)
+
+### Server Action Pattern (with S3)
+- Action file: `lib/core/[domain]/*-action.ts`
+- Input validation: `Schema.decodeUnknown()` with `Effect.mapError`
+- Get buffer from S3: `yield* s3.getBuffer(key)`
+- Deduplication: check existing records before insert
+- Revalidate paths on success: `revalidatePath('/')`
+
+---
+
+## Task - db-1
+
+- Added `category` table with id, name, icon, isDefault, createdAt, updatedAt
+- Unique constraint on `name` column
+- Created seed script with 9 default categories
+- Added `tsx` devDep and `db:seed` npm script
+- Added `postgres` dep for seed script connection
+
+**Files changed:**
+- `lib/services/db/schema.ts` - added category table
+- `lib/services/db/seed.ts` - new seed script
+- `package.json` - added db:seed script, postgres, tsx deps
+
+## Task - db-2
+
+- Added `upload` table with id, fileName, uploadedBy, transactionCount, dateRangeStart, dateRangeEnd, createdAt
+- FK `uploadedBy` references `user.id` with cascade delete
+- Added upload to relations (user has many uploads)
+- Generated migration
+
+**Files changed:**
+- `lib/services/db/schema.ts` - added upload table + relations
+- `lib/services/db/migrations/20260125153908_add-upload-table/`
+
+## Task - db-3
+
+- Added `transaction` table with all required columns
+- FKs: categoryId → category.id (nullable), uploadId → upload.id (cascade delete)
+- Index on `date` column for range queries
+- Added relations for transaction ↔ upload ↔ category
+
+**Files changed:**
+- `lib/services/db/schema.ts` - added transaction table + relations
+- `lib/services/db/migrations/20260125154040_add-transaction-table/`
+
+## Task - db-4
+
+- Added `merchant_mapping` table with id, merchantPattern, categoryId, createdAt, updatedAt
+- FK `categoryId` references `category.id`
+- Unique constraint on `merchantPattern`
+- Added relations: merchantMapping ↔ category
+
+**Files changed:**
+- `lib/services/db/schema.ts` - added merchantMapping table + relations
+- `lib/services/db/migrations/20260125154157_add-merchant-mapping-table/`
+
+## Task - setup-1
+
+- Installed `exceljs` package for server-side Excel parsing (xlsx had corruption issues)
+- Verified parsing works with Handelsbanken sample file
+- Created test at `lib/core/transaction/parse-xlsx.test.ts`
+- Handelsbanken format: row 9 headers, row 10+ data (date, date, merchant, amount, balance)
+
+**Files changed:**
+- `package.json` - added exceljs dependency
+- `lib/core/transaction/parse-xlsx.test.ts` - parsing verification test
+
+**Learnings:**
+- xlsx library failed with "Bad compressed size" error on valid Excel files
+- exceljs handles Excel 2007+ format without issues
+- Handelsbanken columns: Reskontradatum (col B), Transaktionsdatum (col C), Text (col D), Belopp (col E), Saldo (col F)
+
+## Task - api-1
+
+- Created `uploadTransactionsAction` server action
+- Downloads file from S3 using key, parses Handelsbanken Excel format
+- Creates upload record with metadata (fileName, dateRange, transactionCount)
+- Deduplicates by (date + merchant + amount) - skips existing transactions
+- Returns { uploadId, fileName, newCount, skippedCount, dateRangeStart, dateRangeEnd }
+- Uses temp file approach for exceljs Buffer compatibility
+
+**Files changed:**
+- `lib/core/transaction/upload-transactions-action.ts` - new server action
+- `lib/core/transaction/upload-transactions.test.ts` - parsing tests
+
+**Learnings:**
+- exceljs types define own Buffer interface incompatible with Node's Buffer
+- Workaround: write buffer to temp file, use `readFile`, then cleanup
+- Handelsbanken row values are 1-indexed: date at [2], merchant at [3], amount at [4], balance at [5]
+
+## Task - api-2
+
+- Added auto-categorization during upload using merchant_mapping table
+- Fetches all mappings before processing transactions
+- Case-insensitive substring matching (merchant.toLowerCase().includes(pattern.toLowerCase()))
+- Sets categoryId on matched transactions, null on unmatched
+- Returns categorizedCount in result alongside newCount/skippedCount
+
+**Files changed:**
+- `lib/core/transaction/upload-transactions-action.ts` - added findCategoryForMerchant, categorizedCount
+- `lib/core/transaction/upload-transactions.test.ts` - added auto-categorization tests
+
+## Task - api-3
+
+- Created `categorizeTransactionAction(transactionId, categoryId)`
+- Validates category/transaction exist before updating
+- Updates transaction's categoryId
+- Creates or updates merchant_mapping using `onConflictDoUpdate` (upsert)
+- Revalidates '/' and '/review' paths on success
+
+**Files changed:**
+- `lib/core/transaction/categorize-transaction-action.ts` - new server action
+
+**Learnings:**
+- Drizzle upsert: `.onConflictDoUpdate({ target: table.column, set: { ... } })`
+
+## Task - api-4
+
+- Created `createCategoryAction(name)` - creates non-default category
+- Created `updateCategoryAction(id, name)` - updates category name
+- Created `deleteCategoryAction(id)` - deletes with constraints:
+  - Cannot delete default categories
+  - Cannot delete categories with transactions (returns count in error)
+  - Deletes associated merchant_mappings before category
+- Added `ConstraintError` to shared errors for constraint violations
+
+**Files changed:**
+- `lib/core/category/create-category-action.ts` - new action
+- `lib/core/category/update-category-action.ts` - new action
+- `lib/core/category/delete-category-action.ts` - new action
+- `lib/core/errors/index.ts` - added ConstraintError
+
+## Task - api-5
+
+- Created `lib/core/transaction/queries.ts` with 4 query functions:
+  - `getTransactionSummary(range)` - totals by category with count
+  - `getTotalIncome(range)` - sum of positive amounts
+  - `getTotalExpenses(range)` - sum of negative amounts (returns abs value)
+  - `getUncategorizedTransactions()` - null categoryId, ordered by date desc
+- All use Effect.gen + Db service, no server action wrapper
+- Date range uses `gte` + `lt` for exclusive end (standard range semantics)
+
+**Files changed:**
+- `lib/core/transaction/queries.ts` - new query functions
+
+**Learnings:**
+- Query functions (for RSC data fetching) are pure Effect, not wrapped in server actions
+- Drizzle SQL aggregation: `sql<string>\`sum(col)\`` then `parseFloat()` result
+- Use `gte/lt` for date ranges (inclusive start, exclusive end)
+
+## Task - api-6
+
+- Added `getUpcomingExpenses()` to `lib/core/transaction/queries.ts`
+- Analyzes transaction history for yearly recurring patterns
+- Detection logic:
+  - Groups expenses by merchant (case-insensitive)
+  - Looks for transactions ~12 months apart (10-14 month window)
+  - Checks amount similarity within ±20% tolerance
+  - Predicts next occurrence by adding 1 year to most recent
+- Returns expenses expected in next 60 days, sorted by soonest first
+- Includes: merchant, expectedAmount, expectedDate, daysUntil, categoryId, categoryName
+
+**Files changed:**
+- `lib/core/transaction/queries.ts` - added getUpcomingExpenses function
+
+**Learnings:**
+- Pattern detection needs flexible time window (10-14 months) to handle real-world variance
+- Store decimal amounts as strings in Drizzle, parseFloat() when using
+
+### Dynamic Page Pattern (Auth-Protected)
+- Server page with `export const dynamic = 'force-dynamic'`
+- `Content` async component with `await cookies()` first
+- Auth via `yield* getSession()` inside Effect pipeline
+- Wrap Content in `<Suspense>` with loading fallback
+- Handle `UnauthenticatedError` with `NextEffect.redirect('/login')`
+- Client interactivity: extract to separate `'use client'` component
+
+---
+
+## Task - ui-1
+
+- Created `/upload` route at `app/(dashboard)/upload/page.tsx`
+- Server component checks auth upfront, redirects to `/login` if unauthenticated
+- Client component `UploadForm` handles file selection and upload flow
+- Accepts only `.xlsx` files via input accept attribute
+- Upload flow: get signed URL → PUT to S3 → call uploadTransactionsAction
+- Shows states: idle, uploading, processing, success, error
+- Success shows: newCount, skippedCount, categorizedCount, dateRange
+- Clean Vercel-style with dark mode support via Tailwind
+
+**Files changed:**
+- `app/(dashboard)/upload/page.tsx` - server page with auth
+- `app/(dashboard)/upload/upload-form.tsx` - client upload component
+
+## Task - ui-2
+
+- Created `/review` route at `app/(dashboard)/review/page.tsx`
+- Auth-protected server page using same pattern as upload page
+- Added `getAllCategories()` query to `lib/core/transaction/queries.ts`
+- Client `ReviewList` component displays uncategorized transactions
+- Each row shows: date, merchant, amount (color-coded expense/income)
+- Base UI Select dropdown for category assignment
+- On select, calls `categorizeTransactionAction` and removes from list
+- Empty state with checkmark when all categorized
+
+**Files changed:**
+- `lib/core/transaction/queries.ts` - added getAllCategories query
+- `app/(dashboard)/review/page.tsx` - server page with auth
+- `app/(dashboard)/review/review-list.tsx` - client review list component
+
+**Learnings:**
+- Base UI Select `onValueChange` has type `(value: string | null) => void`
+- Use optimistic UI: remove item from local state on successful categorization
+
+## Task - ui-3
+
+- Created dashboard page at `app/(dashboard)/page.tsx` (routes to `/`)
+- Removed posts demo files (page.tsx, search-params.ts, post-*.tsx)
+- Auth-protected with redirect to `/login` on UnauthenticatedError
+- Three metric cards: Income (green), Expenses (red), Net (color by sign)
+- Category breakdown as sorted list with progress bars
+- Default timeframe: current month (hardcoded for now, ui-4 adds selector)
+- Empty state when no transactions in month
+
+**Files changed:**
+- `app/(dashboard)/page.tsx` - new dashboard page
+- `app/page.tsx` - removed (was posts demo)
+- `app/search-params.ts`, `app/post-*.tsx` - removed (posts demo)
+
+**Learnings:**
+- Route groups `(dashboard)` don't add to URL path, so `app/(dashboard)/page.tsx` serves `/`
+- Cannot have both `app/page.tsx` and `app/(dashboard)/page.tsx` - they conflict
+- Currency formatting: `Intl.NumberFormat('sv-SE', { style: 'currency', currency: 'SEK' })`
+
+## Task - ui-4
+
+- Created `/app/(dashboard)/search-params.ts` with nuqs URL state definitions
+- Timeframe values: 'week', 'month', 'year' with default 'month'
+- Period string format: YYYY-MM (month), YYYY-Www (week), YYYY (year)
+- Helper functions: `getDateRange()`, `getPeriodOffset()`, `isCurrentPeriod()`
+- Created `/app/(dashboard)/timeframe-selector.tsx` client component
+- Toggle buttons for week/month/year with segmented control styling
+- Prev/next navigation with chevron buttons
+- "Today" button appears when viewing past periods
+- Dashboard page now reads URL params and passes to data queries
+- Suspense key derived from params triggers loading state on change
+
+**Files changed:**
+- `app/(dashboard)/search-params.ts` - new URL state definitions
+- `app/(dashboard)/timeframe-selector.tsx` - new client component
+- `app/(dashboard)/page.tsx` - integrated search params + selector
+
+**Learnings:**
+- nuqs `parseAsStringLiteral` requires all imports from `nuqs/server` in server files
+- ISO week calculation: Thursday determines the year for that week
+- Use `shallow: false` + `history: 'push'` to trigger server re-render with browser history
+
+## Task - ui-5
+
+- Added comparison period helpers to `app/(dashboard)/search-params.ts`:
+  - `getPreviousPeriodRange()` - previous week/month/year
+  - `getYearAgoRange()` - same period one year ago
+- Created `TrendIndicator` component showing:
+  - Period-over-period change with arrow + percentage (colored green/red based on context)
+  - Year-over-year percentage for reference
+- Created `CategoryTrendBadge` component for per-category trends (pill with arrow + %)
+- Dashboard now fetches 8 queries in parallel: current + prev + yearAgo for income/expenses + category summaries
+- Cards show MoM/WoW/YoY trends below the main value
+- Category breakdown shows trend badge when comparing to previous period
+
+**Files changed:**
+- `app/(dashboard)/search-params.ts` - added getPreviousPeriodRange, getYearAgoRange
+- `app/(dashboard)/trend-indicator.tsx` - new TrendIndicator + CategoryTrendBadge components
+- `app/(dashboard)/page.tsx` - integrated comparison data + trend indicators
+
+**Learnings:**
+- For expenses: lower = good (green), higher = bad (red). For income/net: higher = good
+- YoY is redundant when viewing yearly timeframe - skip it to avoid confusion
+- Fetch all comparison data in parallel via Effect.all for performance
+
+## Task - ui-6
+
+- Added upcoming expenses section below category breakdown on dashboard
+- Uses existing `getUpcomingExpenses()` query, fetched in parallel with other data
+- Visual urgency levels: urgent (≤7 days, red), soon (≤14 days, amber), normal
+- Shows: merchant, category, expected amount, days until due
+- Empty state when no recurring expenses detected in next 60 days
+
+**Files changed:**
+- `app/(dashboard)/page.tsx` - added upcomingExpenses fetch + section UI
+
+## Task - ui-7
+
+- Created `/transactions` route at `app/(dashboard)/transactions/page.tsx`
+- Auth-protected server page with Suspense + Content pattern
+- URL state via nuqs: category, search, startDate, endDate, page
+- Added `getTransactions()` query with filters and pagination to queries.ts
+- Client `TransactionList` component with:
+  - Search input (form submission)
+  - Category dropdown (includes "Uncategorized" option)
+  - Date range inputs
+  - Clear filters button
+  - Paginated transaction list (25 per page)
+  - Pagination controls (prev/next)
+
+**Files changed:**
+- `app/(dashboard)/transactions/search-params.ts` - new URL state definitions
+- `app/(dashboard)/transactions/page.tsx` - server page with auth
+- `app/(dashboard)/transactions/transaction-list.tsx` - client list component with filters
+- `lib/core/transaction/queries.ts` - added getTransactions with filters/pagination
+
+**Learnings:**
+- Drizzle `count()` returns number directly, no need to parse
+- `ilike` for case-insensitive search in Postgres
+- nuqs `useQueryStates` for batch URL param updates
+
+## Task - ui-8
+
+- Created `/categories` route at `app/(dashboard)/categories/page.tsx`
+- Auth-protected server page with Suspense + Content pattern
+- Added `getCategoriesWithDetails()` query to `lib/core/transaction/queries.ts`:
+  - Returns categories with transaction counts and merchant mappings
+  - Uses LEFT JOIN + GROUP BY for counts, separate query for mappings
+- Client `CategoryList` component with:
+  - Create new category (inline form with name input)
+  - Edit category name (inline editing)
+  - Delete non-default categories (with AlertDialog confirmation)
+  - Shows transaction count per category
+  - Expandable merchant mappings section per category
+  - Default category badge (cannot delete)
+  - Optimistic UI updates on all operations
+
+**Files changed:**
+- `lib/core/transaction/queries.ts` - added getCategoriesWithDetails query
+- `app/(dashboard)/categories/page.tsx` - server page with auth
+- `app/(dashboard)/categories/category-list.tsx` - client CRUD component
+
+**Learnings:**
+- Base UI AlertDialogTrigger uses `render` prop for custom trigger element
+- LEFT JOIN with GROUP BY for counting related records in single query
+- Keep mappings query separate from categories to avoid complex GROUP BY

@@ -1,0 +1,257 @@
+{
+  "prdName": "kostnad",
+  "tasks": [
+    {
+      "id": "db-1",
+      "category": "db",
+      "description": "Database schema for categories table with default categories seeded",
+      "steps": [
+        "category table exists with id, name, icon, isDefault, createdAt, updatedAt",
+        "Unique constraint on name",
+        "Default categories seeded: Groceries, Restaurants, Transport, Utilities, Entertainment, Shopping, Health, Travel, Other"
+      ],
+      "passes": true
+    },
+    {
+      "id": "db-2",
+      "category": "db",
+      "description": "Database schema for uploads table to track file imports",
+      "steps": [
+        "upload table exists with id, fileName, uploadedBy, transactionCount, dateRangeStart, dateRangeEnd, createdAt",
+        "Foreign key uploadedBy references user.id with cascade delete"
+      ],
+      "passes": true
+    },
+    {
+      "id": "db-3",
+      "category": "db",
+      "description": "Database schema for transactions table",
+      "steps": [
+        "transaction table exists with id, date, merchant, amount (decimal), balance (nullable), categoryId, uploadId, createdAt, updatedAt",
+        "Foreign key categoryId references category.id",
+        "Foreign key uploadId references upload.id with cascade delete",
+        "Index on date for range queries"
+      ],
+      "passes": true
+    },
+    {
+      "id": "db-4",
+      "category": "db",
+      "description": "Database schema for merchant_mapping table",
+      "steps": [
+        "merchant_mapping table exists with id, merchantPattern, categoryId, createdAt, updatedAt",
+        "Foreign key categoryId references category.id",
+        "Unique constraint on merchantPattern"
+      ],
+      "passes": true
+    },
+    {
+      "id": "setup-1",
+      "category": "setup",
+      "description": "Install xlsx parsing library for server-side Excel parsing",
+      "steps": ["xlsx or exceljs package installed", "Can import and use in server action"],
+      "passes": true
+    },
+    {
+      "id": "api-1",
+      "category": "api",
+      "description": "Upload transactions action - parse Handelsbanken Excel and store",
+      "steps": [
+        "uploadTransactionsAction accepts file key from S3",
+        "Parses Handelsbanken format (header rows, data starting row 10)",
+        "Extracts date, merchant, amount, balance from each row",
+        "Creates upload record with metadata",
+        "Creates transaction records linked to upload",
+        "Deduplicates across uploads (date + merchant + amount)",
+        "Returns count of new vs skipped transactions"
+      ],
+      "passes": true
+    },
+    {
+      "id": "api-2",
+      "category": "api",
+      "description": "Auto-categorization during upload using merchant mappings",
+      "steps": [
+        "During upload, each transaction checked against merchant_mapping",
+        "Pattern matching is case-insensitive substring",
+        "Matched transactions get categoryId set",
+        "Unmatched transactions have null categoryId"
+      ],
+      "passes": true
+    },
+    {
+      "id": "api-3",
+      "category": "api",
+      "description": "Categorize transaction action with merchant mapping update",
+      "steps": [
+        "categorizeTransactionAction(transactionId, categoryId) updates transaction",
+        "Also creates/updates merchant_mapping for that merchant pattern",
+        "Future transactions with same merchant auto-categorized"
+      ],
+      "passes": true
+    },
+    {
+      "id": "api-4",
+      "category": "api",
+      "description": "Category CRUD actions",
+      "steps": [
+        "createCategoryAction(name) creates new category",
+        "updateCategoryAction(id, name) updates category name",
+        "deleteCategoryAction(id) deletes category (fails if has transactions)",
+        "Cannot delete default categories"
+      ],
+      "passes": true
+    },
+    {
+      "id": "api-5",
+      "category": "api",
+      "description": "Query functions for dashboard data",
+      "steps": [
+        "getTransactionSummary(startDate, endDate) returns totals by category",
+        "getTotalIncome(startDate, endDate) returns sum of positive amounts",
+        "getTotalExpenses(startDate, endDate) returns sum of negative amounts",
+        "getUncategorizedTransactions() returns transactions with null categoryId"
+      ],
+      "passes": true
+    },
+    {
+      "id": "api-6",
+      "category": "api",
+      "description": "Upcoming expenses detection from historical patterns",
+      "steps": [
+        "getUpcomingExpenses() analyzes transaction history",
+        "Detects yearly recurring: same merchant, similar amount (±20%), ~12 months apart",
+        "Returns expenses expected in next 60 days",
+        "Includes: merchant, expected amount, expected date, days until"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-1",
+      "category": "ui",
+      "description": "Upload page with file picker and processing feedback",
+      "steps": [
+        "/upload route exists and is protected (auth required)",
+        "File picker accepts .xlsx files only",
+        "Upload to S3, then trigger server action",
+        "Shows progress/result: X new, Y skipped (duplicates)",
+        "Clean Vercel-style design with light/dark mode"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-2",
+      "category": "ui",
+      "description": "Review page for uncategorized transactions",
+      "steps": [
+        "/review route exists and is protected",
+        "Lists transactions with null categoryId",
+        "Each row shows: date, merchant, amount",
+        "Category dropdown to assign",
+        "On assign, updates transaction and creates merchant mapping",
+        "Empty state when all categorized"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-3",
+      "category": "ui",
+      "description": "Dashboard overview with totals and category breakdown",
+      "steps": [
+        "/ route shows dashboard (protected)",
+        "Cards: Total Income, Total Expenses, Net",
+        "Category breakdown as bar chart or sorted list",
+        "Default timeframe: current month",
+        "Clean minimalist Vercel aesthetic"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-4",
+      "category": "ui",
+      "description": "Dashboard timeframe selector (week/month/year)",
+      "steps": [
+        "Timeframe selector: Week, Month, Year",
+        "Uses nuqs for URL state",
+        "Can navigate to previous/next periods",
+        "All dashboard data updates on timeframe change"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-5",
+      "category": "ui",
+      "description": "Dashboard trends comparison",
+      "steps": [
+        "Month-over-month comparison visible",
+        "Year-over-year comparison (same month last year)",
+        "Visual indicators: up/down arrows or percentages",
+        "Per-category trend when drilling into category"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-6",
+      "category": "ui",
+      "description": "Upcoming expenses section on dashboard",
+      "steps": [
+        "Section shows predicted large expenses",
+        "Shows: merchant, expected amount, days until due",
+        "Only expenses in next 60 days",
+        "Empty state if no upcoming detected"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-7",
+      "category": "ui",
+      "description": "Transactions list page with filters",
+      "steps": [
+        "/transactions route exists (protected)",
+        "Lists all transactions, newest first",
+        "Filter by: category, date range",
+        "Search by merchant name",
+        "Pagination or infinite scroll"
+      ],
+      "passes": true
+    },
+    {
+      "id": "ui-8",
+      "category": "ui",
+      "description": "Categories management page",
+      "steps": [
+        "/categories route exists (protected)",
+        "Lists all categories with transaction count",
+        "Can create new category",
+        "Can edit category name",
+        "Can delete non-default categories (with confirmation)",
+        "Shows merchant mappings per category"
+      ],
+      "passes": true
+    }
+  ],
+  "context": {
+    "patterns": [
+      "Server actions: lib/core/post/create-post-action.ts",
+      "Page structure: app/page.tsx - Suspense + Content pattern",
+      "URL state: app/search-params.ts - nuqs for filters",
+      "File uploads: lib/core/file/get-upload-url-action.ts - S3 signed URL"
+    ],
+    "keyFiles": [
+      "lib/services/db/schema.ts",
+      "lib/layers.ts",
+      "lib/core/errors/index.ts",
+      "components/ui/",
+      "bank-data/Handelsbanken_Account_Transactions_2026-01-25.xlsx"
+    ],
+    "nonGoals": [
+      "Budgeting/spending limits",
+      "Bill reminders with notifications",
+      "Bank API integration",
+      "Multi-account merging logic",
+      "Receipt scanning",
+      "AI/ML categorization",
+      "Export/reporting"
+    ]
+  }
+}
