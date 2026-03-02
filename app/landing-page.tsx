@@ -647,8 +647,8 @@ const FEATURES = [
   },
   {
     icon: TrendingUp,
-    title: 'Track Progress',
-    description: 'Monitor spending over time. Spot patterns and make informed decisions.'
+    title: 'Not Enshittified Yet',
+    description: 'No ads, no upsells, no dark patterns. Just a tool that works for you.'
   }
 ];
 
